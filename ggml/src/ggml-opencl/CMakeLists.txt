@@ -65,6 +65,7 @@ set(GGML_OPENCL_KERNELS
     add_id
     moe_add_id_glu
     argsort
+    top_k_radix
     tri
     fill
     clamp
