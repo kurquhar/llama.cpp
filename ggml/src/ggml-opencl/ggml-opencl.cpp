@@ -630,7 +630,6 @@ struct ggml_backend_opencl_context {
     // argsort is loaded in supports_op because its availability depends on how
     // many workgroups are allowed, which requires kernel compilation.
     bool kernels_loaded_argsort = false;
-    bool kernels_loaded_top_k  = false;
     // rest of the kernels are currently always loaded in alloc_buffer.
     bool kernels_loaded = false;
 
@@ -1437,31 +1436,6 @@ static void load_cl_kernels_argsort(ggml_backend_opencl_context *backend_ctx) {
 
         CL_CHECK((backend_ctx->kernel_argsort_f32_i32 = clCreateKernel(backend_ctx->program_argsort_f32_i32, "kernel_argsort_f32_i32", &err), err));
         backend_ctx->kernels_loaded_argsort = true;
-    }
-}
-
-static void load_cl_kernels_top_k(ggml_backend_opencl_context *backend_ctx) {
-    auto opencl_c_std =
-        std::string("CL") + std::to_string(backend_ctx->opencl_c_version.major) + "." + std::to_string(backend_ctx->opencl_c_version.minor);
-    std::string compile_opts = std::string("-cl-std=") + opencl_c_std +
-                               " -cl-mad-enable -cl-unsafe-math-optimizations"
-                               " -cl-finite-math-only -cl-fast-relaxed-math";
-
-    if (!backend_ctx->kernels_loaded_top_k) {
-        cl_int err;
-#ifdef GGML_OPENCL_EMBED_KERNELS
-        const std::string kernel_src {
-            #include "top_k_radix.cl.h"
-        };
-#else
-        const std::string kernel_src = read_file("top_k_radix.cl");
-#endif
-        cl_program prog =
-            build_program_from_source(backend_ctx, kernel_src.c_str(), compile_opts);
-
-        CL_CHECK((backend_ctx->kernel_top_k_radix_f32_i32 = clCreateKernel(prog, "kernel_top_k_radix_f32_i32", &err), err));
-        CL_CHECK(clReleaseProgram(prog));
-        backend_ctx->kernels_loaded_top_k = true;
     }
 }
 
@@ -5162,6 +5136,24 @@ static void load_cl_kernels(ggml_backend_opencl_context *backend_ctx) {
         GGML_LOG_CONT(".");
     }
 #endif // GGML_OPENCL_USE_ADRENO_KERNELS
+
+    // top_k_radix
+    {
+#ifdef GGML_OPENCL_EMBED_KERNELS
+        const std::string kernel_src {
+            #include "top_k_radix.cl.h"
+        };
+#else
+        const std::string kernel_src = read_file("top_k_radix.cl");
+#endif
+        cl_program prog =
+            build_program_from_source(backend_ctx, kernel_src.c_str(), compile_opts);
+
+        CL_CHECK((backend_ctx->kernel_top_k_radix_f32_i32 = clCreateKernel(prog, "kernel_top_k_radix_f32_i32", &err), err));
+        CL_CHECK(clReleaseProgram(prog));
+        GGML_LOG_CONT(".");
+    }
+
     GGML_LOG_CONT("\n");
     backend_ctx->kernels_loaded = true;
 }
@@ -8941,11 +8933,10 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
         case GGML_OP_IM2COL:
             return true;
         case GGML_OP_TOP_K:
-            load_cl_kernels_top_k(backend_ctx);
             return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_I32 &&
                    ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op) &&
                    op->ne[0] <= 64 && op->src[0]->ne[0] >= 1024 &&
-                   backend_ctx->get_kernel_workgroup_size(backend_ctx->kernel_top_k_radix_f32_i32) >= 1024;
+                   backend_ctx->max_workgroup_size >= 1024;
         case GGML_OP_ARGSORT: {
             load_cl_kernels_argsort(backend_ctx);
 
